@@ -145,14 +145,15 @@ Tracks each data collection run for auditability and resumability.
 
 ## Phase 3: Data Ingestion Pipeline
 
-- [ ] Write `ingest.py` — Python script using CourtListener API
+- [x] Write `ingest.py` — Python script using CourtListener API
   - Accepts: search term, court filter, date range
   - Fetches paginated results
-  - Extracts opinion metadata + snippet
+  - Extracts opinion metadata + full text (HTML fallback chain)
+  - Extracts all matching excerpts with ±1000-char context windows
   - Deduplicates against existing records
   - Writes to Supabase via REST API
   - Logs run to `ingestion_runs`
-- [ ] Test run: Alabama (`ala` + `alacrimapp`) × "Bible"
+- [x] Test run: Alabama (`ala`) × "Bible" — smoke test passed (3 opinions end-to-end)
 - [ ] Validate sample of results manually
 - [ ] Expand: all Alabama courts × all active search terms
 - [ ] Expand: all 50 states × all active search terms
@@ -194,4 +195,5 @@ Tracks each data collection run for auditability and resumability.
 - CourtListener API rate limit: 10 requests per 60 seconds (configured in MCP)
 - Alabama test: ~121 results for "Bible" alone across Supreme Court + Criminal Appeals
 - `.mcp.json` contains API credentials — gitignored, never commit
-- Full text retrieval deferred to a later phase; `full_text` column is ready
+- Full text is retrieved during ingestion via HTML fallback chain (`plain_text` → `html_lawbox` → etc.)
+- `courts` table seeded with Alabama courts (ala, alacrimapp, alactapp) and federal circuits (scotus, ca1–ca11, cadc)
