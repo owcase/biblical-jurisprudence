@@ -46,6 +46,38 @@ REQUEST_INTERVAL = RATE_LIMIT_PERIOD / RATE_LIMIT_REQUESTS  # ~7.5s between requ
 # Excerpt context: characters to include around the matched term
 EXCERPT_WINDOW = 1000  # characters either side of match
 
+# ---------------------------------------------------------------------------
+# Excerpt filters
+# Each entry is (compiled_regex, filter_name). An excerpt is filtered if any
+# pattern matches. Keyed by search term (case-insensitive).
+# Add new patterns here as false positive classes are discovered.
+# ---------------------------------------------------------------------------
+
+EXCERPT_FILTERS: dict[str, list[tuple[re.Pattern, str]]] = {
+    "bible": [
+        # "Bible Baptist Church", "Bible Way Church", "Bible Fellowship", etc.
+        (
+            re.compile(
+                r"\bBible\s+\w+\s*"
+                r"(Church|Chapel|Temple|Ministry|Ministries|Center|Centre"
+                r"|Fellowship|School|College|Seminary|Institute|Mission"
+                r"|Camp|League|Union|Association|Foundation|Society)\b",
+                re.IGNORECASE,
+            ),
+            "bible_org_suffix",
+        ),
+        # "American Bible Society", "Gideon Bible", "International Bible ...", etc.
+        (
+            re.compile(
+                r"\b(American|National|International|Gideon|World|United"
+                r"|Open|Full\s+Gospel)\s+Bible\b",
+                re.IGNORECASE,
+            ),
+            "bible_org_prefix",
+        ),
+    ],
+}
+
 
 # ---------------------------------------------------------------------------
 # Rate-limited HTTP client
@@ -94,6 +126,18 @@ class RateLimitedClient:
 # ---------------------------------------------------------------------------
 # Text helpers
 # ---------------------------------------------------------------------------
+
+def check_filters(excerpt: str, term: str) -> tuple[bool, str | None]:
+    """
+    Check whether an excerpt should be filtered out as an org/church name hit.
+    Returns (is_filtered, filter_name). filter_name is None if not filtered.
+    """
+    patterns = EXCERPT_FILTERS.get(term.lower(), [])
+    for pattern, filter_name in patterns:
+        if pattern.search(excerpt):
+            return True, filter_name
+    return False, None
+
 
 def html_to_text(html: str) -> str:
     """Strip HTML tags and normalise whitespace."""
@@ -279,6 +323,26 @@ def save_match(
     }).execute()
 
 
+def save_filtered_match(
+    sb: Client,
+    opinion_id: int,
+    term_id: int,
+    section: str,
+    excerpt: str,
+    context: str,
+    filter_name: str,
+):
+    """Log an excerpt that was dropped by a filter rule, for audit purposes."""
+    sb.table("filtered_matches").insert({
+        "opinion_id": opinion_id,
+        "search_term_id": term_id,
+        "opinion_section": section,
+        "excerpt": excerpt,
+        "excerpt_context": context,
+        "filter_name": filter_name,
+    }).execute()
+
+
 def update_full_text(sb: Client, opinion_id: int, full_text: str):
     sb.table("opinions").update({
         "full_text": full_text,
@@ -386,20 +450,37 @@ def ingest(
 
             # 5. Extract and store matches
             match_count = 0
+            filtered_count = 0
             for section_type, section_text in all_text_parts:
                 hits = extract_excerpt(section_text, term)
                 for hit in hits:
-                    save_match(
-                        sb,
-                        opinion_id,
-                        term_id,
-                        section_type,
-                        hit["excerpt"],
-                        hit["excerpt_context"],
-                    )
-                    match_count += 1
+                    is_filtered, filter_name = check_filters(hit["excerpt"], term)
+                    if is_filtered:
+                        save_filtered_match(
+                            sb,
+                            opinion_id,
+                            term_id,
+                            section_type,
+                            hit["excerpt"],
+                            hit["excerpt_context"],
+                            filter_name,
+                        )
+                        filtered_count += 1
+                    else:
+                        save_match(
+                            sb,
+                            opinion_id,
+                            term_id,
+                            section_type,
+                            hit["excerpt"],
+                            hit["excerpt_context"],
+                        )
+                        match_count += 1
 
-            print(f"  {match_count} match(es) stored", flush=True)
+            msg = f"  {match_count} match(es) stored"
+            if filtered_count:
+                msg += f", {filtered_count} filtered (see filtered_matches)"
+            print(msg, flush=True)
             ingested_count += 1
 
     except Exception as e:
