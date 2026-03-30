@@ -75,6 +75,16 @@ EXCERPT_FILTERS: dict[str, list[tuple[re.Pattern, str]]] = {
             ),
             "bible_org_prefix",
         ),
+        # "Watchtower Bible & Tract Society", etc.
+        (
+            re.compile(r"\bWatchtower\s+Bible\b", re.IGNORECASE),
+            "bible_watchtower",
+        ),
+        # "Integrity Bible Church", "Fort Collins Bible Church", "[X] Bible Church", etc.
+        (
+            re.compile(r"\b\w+\s+Bible\s+Church\b", re.IGNORECASE),
+            "bible_church_name",
+        ),
     ],
 }
 
