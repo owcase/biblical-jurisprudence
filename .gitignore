@@ -3,3 +3,5 @@
 __pycache__/
 *.pyc
 .venv/
+.court_ids.txt
+logs/
