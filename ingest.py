@@ -26,6 +26,8 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
+from classify import classify_excerpt
+
 load_dotenv()
 
 # ---------------------------------------------------------------------------
@@ -321,16 +323,22 @@ def save_match(
     section: str,
     excerpt: str,
     context: str,
+    false_positive: bool = False,
+    notes: str | None = None,
 ):
     if opinion_match_exists(sb, opinion_id, term_id, excerpt):
         return
-    sb.table("opinion_matches").insert({
+    row = {
         "opinion_id": opinion_id,
         "search_term_id": term_id,
         "opinion_section": section,
         "excerpt": excerpt,
         "excerpt_context": context,
-    }).execute()
+        "false_positive": false_positive,
+    }
+    if notes:
+        row["notes"] = notes
+    sb.table("opinion_matches").insert(row).execute()
 
 
 def save_filtered_match(
@@ -461,35 +469,46 @@ def ingest(
             # 5. Extract and store matches
             match_count = 0
             filtered_count = 0
+            auto_fp_count = 0
             for section_type, section_text in all_text_parts:
                 hits = extract_excerpt(section_text, term)
                 for hit in hits:
-                    is_filtered, filter_name = check_filters(hit["excerpt"], term)
+                    excerpt = hit["excerpt"]
+
+                    # Org/church name filter → filtered_matches table
+                    is_filtered, filter_name = check_filters(excerpt, term)
                     if is_filtered:
                         save_filtered_match(
-                            sb,
-                            opinion_id,
-                            term_id,
-                            section_type,
-                            hit["excerpt"],
-                            hit["excerpt_context"],
-                            filter_name,
+                            sb, opinion_id, term_id, section_type,
+                            excerpt, hit["excerpt_context"], filter_name,
                         )
                         filtered_count += 1
-                    else:
+                        continue
+
+                    # Auto-classifier → opinion_matches with false_positive=true
+                    is_auto_fp, rule_name = classify_excerpt(excerpt)
+                    if is_auto_fp:
                         save_match(
-                            sb,
-                            opinion_id,
-                            term_id,
-                            section_type,
-                            hit["excerpt"],
-                            hit["excerpt_context"],
+                            sb, opinion_id, term_id, section_type,
+                            excerpt, hit["excerpt_context"],
+                            false_positive=True,
+                            notes=f"auto-classified: {rule_name}",
                         )
-                        match_count += 1
+                        auto_fp_count += 1
+                        continue
+
+                    # Genuine candidate → opinion_matches for manual review
+                    save_match(
+                        sb, opinion_id, term_id, section_type,
+                        excerpt, hit["excerpt_context"],
+                    )
+                    match_count += 1
 
             msg = f"  {match_count} match(es) stored"
+            if auto_fp_count:
+                msg += f", {auto_fp_count} auto-classified FP"
             if filtered_count:
-                msg += f", {filtered_count} filtered (see filtered_matches)"
+                msg += f", {filtered_count} org-name filtered"
             print(msg, flush=True)
             ingested_count += 1
 
