@@ -47,7 +47,10 @@ if [ ! -f "$COURT_IDS_FILE" ]; then
   exit 1
 fi
 
-mapfile -t COURTS < "$COURT_IDS_FILE"
+COURTS=()
+while IFS= read -r line || [ -n "$line" ]; do
+  [ -n "$line" ] && COURTS+=("$line")
+done < "$COURT_IDS_FILE"
 TOTAL=${#COURTS[@]}
 echo "" | tee -a "$LOG_FILE"
 echo "--- Ingesting $TOTAL courts ---" | tee -a "$LOG_FILE"
