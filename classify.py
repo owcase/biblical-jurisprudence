@@ -207,14 +207,24 @@ def classify_excerpt(excerpt: str) -> tuple[bool, str | None]:
 
 def run_classifier(sb: Client, dry_run: bool = False) -> dict[str, int]:
     """Fetch unreviewed matches and apply classification rules."""
-    rows = (
-        sb.table("opinion_matches")
-        .select("id, excerpt")
-        .eq("verified", False)
-        .eq("false_positive", False)
-        .execute()
-        .data
-    )
+    rows = []
+    page_size = 1000
+    offset = 0
+    while True:
+        batch = (
+            sb.table("opinion_matches")
+            .select("id, excerpt")
+            .eq("verified", False)
+            .eq("false_positive", False)
+            .range(offset, offset + page_size - 1)
+            .execute()
+            .data
+        )
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+        print(f"  Fetched {len(rows)} so far...", flush=True)
 
     print(f"Fetched {len(rows)} unreviewed matches.", flush=True)
 
