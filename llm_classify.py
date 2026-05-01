@@ -40,27 +40,28 @@ SYSTEM_PROMPT = """You are a research assistant helping to classify excerpts fro
 
 Your task is to determine whether the JUDGE is citing the Bible as an authority or reference in the court's own legal reasoning.
 
-Mark as GENUINE (judge cites Bible) if:
+Mark as GENUINE (judge cites Bible) if ANY of the following apply:
 - The judge directly quotes or references a biblical passage in the court's reasoning or analysis
 - The judge invokes biblical text to support a legal conclusion, analogy, or moral argument
 - The judge uses biblical language as part of their own written opinion
+- The excerpt contains a bare biblical citation (e.g. "Genesis 4:9", "Scripture: Romans 13:1") that appears in judicial prose rather than quoted testimony
+- You are UNCERTAIN whether it is the judge or another speaker — when in doubt, mark GENUINE
 
-Mark as FALSE_POSITIVE if:
-- The excerpt describes a party, witness, or juror referencing the Bible
-- The excerpt is about counsel (prosecutor or defense) quoting or arguing from the Bible
-- The excerpt discusses whether counsel's Bible reference was permissible/improper
-- The excerpt describes physical Bible objects (found, stolen, held, etc.)
-- The excerpt is a trial transcript quote (Q/A format)
-- The excerpt involves a case citation where "Bible" is a party name (e.g. "State v. Bible")
-- The excerpt describes religious activity (Bible study, swearing on a Bible, etc.)
-- The Bible is mentioned only as background fact or character evidence
-- The term appears in an organization name (Bible Baptist Church, etc.)
-- The term is a common noun metaphor ("the bible of accounting")
+Mark as FALSE_POSITIVE only when you are CONFIDENT that:
+- A party, witness, or juror (not the judge) is quoting or referencing the Bible
+- It is clearly a trial transcript quote (Q/A format with explicit speaker labels)
+- The Bible is a physical object being described (found, stolen, held, burned)
+- "Bible" is a party name in a case citation (e.g. "State v. Bible, 175 Ariz.")
+- The term appears only in an organization name (Bible Baptist Church, Watchtower Bible Society)
+- The term is used as a common noun metaphor ("the bible of accounting")
+- The excerpt is about religious activity unrelated to judicial reasoning (Bible study, swearing on a Bible)
+
+If there is any reasonable possibility the judge is citing scripture, mark GENUINE.
 
 Respond with exactly one word: GENUINE or FALSE_POSITIVE"""
 
 
-def classify_excerpt_llm(client: anthropic.Anthropic, excerpt: str, context: str) -> bool:
+def classify_excerpt_llm(client: anthropic.Anthropic, excerpt: str, context: str, retries: int = 5) -> bool:
     """
     Returns True if false positive, False if genuine.
     """
@@ -68,14 +69,22 @@ def classify_excerpt_llm(client: anthropic.Anthropic, excerpt: str, context: str
     if context and context != excerpt:
         user_content += f"\n\nBROADER CONTEXT:\n{context[:1500]}"
 
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=10,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
-    )
-    response = message.content[0].text.strip().upper()
-    return response != "GENUINE"
+    for attempt in range(retries):
+        try:
+            message = client.messages.create(
+                model=MODEL,
+                max_tokens=10,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_content}],
+            )
+            response = message.content[0].text.strip().upper()
+            return response != "GENUINE"
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            wait = 2 ** attempt
+            print(f"  [api retry {attempt+1}/{retries}] {e} — waiting {wait}s", flush=True)
+            time.sleep(wait)
 
 
 def fetch_pending(sb: Client, batch_size: int, offset: int) -> list[dict]:
@@ -92,13 +101,27 @@ def fetch_pending(sb: Client, batch_size: int, offset: int) -> list[dict]:
     )
 
 
+def write_with_retry(sb: Client, match_id: int, is_fp: bool, retries: int = 5):
+    """Write a single verdict with exponential backoff on transient errors."""
+    for attempt in range(retries):
+        try:
+            sb.table("opinion_matches").update({
+                "llm_reviewed": True,
+                "llm_false_positive": is_fp,
+            }).eq("id", match_id).execute()
+            return
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            wait = 2 ** attempt
+            print(f"  [db retry {attempt+1}/{retries}] {e} — waiting {wait}s", flush=True)
+            time.sleep(wait)
+
+
 def write_results(sb: Client, results: list[tuple[int, bool]]):
     """Write LLM verdicts back to DB."""
     for match_id, is_fp in results:
-        sb.table("opinion_matches").update({
-            "llm_reviewed": True,
-            "llm_false_positive": is_fp,
-        }).eq("id", match_id).execute()
+        write_with_retry(sb, match_id, is_fp)
 
 
 def show_stats(sb: Client):
